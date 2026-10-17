@@ -13,7 +13,9 @@
   G4_post       校准后的最终场按整行指纹在 C 内置换（S 列重排），NPERM 次 —— 测"最终场的空间对应是否重要"
   G4b_post      同上作用于 G3b 的最终场
   G4_pre        输入级：build_map 之前把历史指纹按整行在 C 内置换 T_π(H)，再用同一 K 锚点 F(T_π(H),S_K) 重新校准再定位，
-                NPERM_PRE 次 —— 隔离"历史无线信息在 K-shot 校准之前的独立贡献"（默认对照）
+                NPERM_PRE 次 —— 在保留源楼栋拟合的跨楼层 law 的前提下，检验"特定空间↔RSS 对应"是否在 K-shot 校准之前就有增益
+                （不是"有/无全部历史无线知识"的对照）。post 与 pre 是两种不同干预，都不是"错的"，也不声称二者等价；
+                每个 episode 独立抽置换，构成复合随机化参照分布（不是同一张图置换 NPERM_PRE 次）。
   G4b_pre       同上：hist_π=hist[π] → mean_s=lookup(axy,C,hist_π,3) → gp_field(固定 GP 参数) → 固定匹配参数
   SH            二级对照：整张地图共同平移 t（10/20/40 m × ±x/±y），最近邻重采样；每个 t 单独有效域掩码 ok_t，
                 SH_t、G1_t、G3_t 都在同一 ok_t 候选域上重算（ok=False 的候选 score=-inf）
@@ -97,52 +99,133 @@ def err(p, t):
 
 
 # ---------- 历史地图整行置换（build_map 之前） ----------
-def _is_pos(a, ref_pos):
-    return isinstance(a, np.ndarray) and a.shape == ref_pos.shape and np.array_equal(a, ref_pos)
+# prior_map 返回结构必须显式声明：PERMUTE = 随"行=地图位置"整行置换的 RSS/信号字段；FIXED = 保持不动的几何字段。
+# 任何未声明、且首维 = 位置数的数组 → 直接报错（逼迫在真实服务器上显式声明 prior_map 的真实结构）。
+# 默认值对应本仓库 mock 的 prior_map（dict: 'p' 指纹, 'xy' 坐标）。
+# TODO(服务器)：读真实 pimfgp_heldout.prior_map 后在此（或用环境变量 PRIOR_MAP_SCHEMA='{"permute":[..],"fixed":[..]}'）声明。
+PRIOR_MAP_SCHEMA = json.loads(os.environ.get('PRIOR_MAP_SCHEMA', '{"permute": ["p"], "fixed": ["xy"]}'))
 
 
-def permute_rows(base, pi, pos):
-    """对 prior_map 输出的历史地图按"行=地图位置"整行置换指纹；坐标数组（与 pos 完全相等者）不动，
-    其余首维 = 位置数的 ndarray 一律按同一 π 置换（指纹、检出掩码、计数等随行一起走）。"""
-    n = len(pos)
-
-    def f(v):
-        if _is_pos(v, pos):
-            return v
-        if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == n:
-            return v[pi]
-        return v
-
+def _fields(base):
     if isinstance(base, dict):
-        return {k: f(v) for k, v in base.items()}
+        return list(base.items())
     if isinstance(base, (tuple, list)):
-        return type(base)(f(v) for v in base)
-    raise TypeError(f'未知的 prior_map 返回类型 {type(base)}，需人工确认置换方式')
+        return list(enumerate(base))
+    raise TypeError(f'未知的 prior_map 返回类型 {type(base)}，需在 PRIOR_MAP_SCHEMA 中显式声明')
+
+
+def _rebuild(base, items):
+    return dict(items) if isinstance(base, dict) else type(base)(v for _, v in sorted(items, key=lambda kv: kv[0]))
+
+
+def _key(k):
+    return k if isinstance(k, str) else int(k)
+
+
+def schema_check(base):
+    """校验 prior_map 输出与声明的 schema 一致；返回 (位置数 N, 几何字段值)。"""
+    perm = [_key(x) for x in PRIOR_MAP_SCHEMA['permute']]; fixed = [_key(x) for x in PRIOR_MAP_SCHEMA['fixed']]
+    items = dict(_fields(base))
+    for k in perm + fixed:
+        if k not in items:
+            raise RuntimeError(f'PRIOR_MAP_SCHEMA 声明的字段 {k!r} 不在 prior_map 输出中（实际字段 {list(items)}）')
+    pos = np.asarray(items[fixed[0]])
+    n = len(pos)
+    for k, v in items.items():
+        if k in perm:
+            if not (isinstance(v, np.ndarray) and v.shape[0] == n):
+                raise RuntimeError(f'置换字段 {k!r} 的首维 != 位置数 {n}')
+        elif k not in fixed and isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == n:
+            raise RuntimeError(f'prior_map 字段 {k!r} 首维 = 位置数 {n} 但未在 PRIOR_MAP_SCHEMA 的 permute/fixed 中声明，拒绝猜测')
+    return n, pos
+
+
+def permute_rows(base, pi):
+    """按白名单整行置换 RSS/信号字段；几何字段不动；未声明的 N 维数组报错。"""
+    n, _ = schema_check(base)
+    assert len(pi) == n and np.array_equal(np.sort(pi), np.arange(n)), 'π 不是 0..N-1 的置换'
+    perm = {_key(x) for x in PRIOR_MAP_SCHEMA['permute']}
+    return _rebuild(base, [(k, (v[pi] if k in perm else v)) for k, v in _fields(base)])
+
+
+def rss_field(base):
+    return np.asarray(dict(_fields(base))[_key(PRIOR_MAP_SCHEMA['permute'][0])], float)
 
 
 def base_positions(base, C):
-    """在 prior_map 输出里找到与 C 一致的坐标数组；找不到则拒绝（无法确认"行=位置"）。"""
-    vals = base.values() if isinstance(base, dict) else base
-    for v in vals:
-        if isinstance(v, np.ndarray) and v.ndim == 2 and v.shape[1] == 2 and v.shape[0] == len(C) and np.allclose(v, C):
-            return v
-    raise RuntimeError('prior_map 输出中找不到与 build_map 候选坐标 C 一致的位置数组；G4_pre 的整行置换无法确认，停止（需人工决策）')
+    """几何字段必须与 build_map 候选坐标 C 一致（确认"行=位置"）；否则停止。"""
+    _, pos = schema_check(base)
+    if not (pos.shape == C.shape and np.allclose(pos, C)):
+        raise RuntimeError('prior_map 几何字段与 build_map 候选坐标 C 不一致；G4_pre 的整行置换无法确认，停止（需人工决策）')
+    return pos
 
 
-def check_C_invariant(base, pos, C, sx, sy, law_field, rng):
-    """P1-4 自检：只打乱历史指纹值（整行置换 + 逐元素打乱），C 坐标必须完全不变。"""
+def check_C_invariant(base, C, sx, sy, law_field, rng):
+    """自检：只打乱历史指纹值（白名单字段的整行置换 + 逐元素打乱），build_map 的 C 坐标必须完全不变。"""
+    n, _ = schema_check(base)
+    perm = {_key(x) for x in PRIOR_MAP_SCHEMA['permute']}
     for mode in ('row', 'entry'):
         if mode == 'row':
-            b2 = permute_rows(base, rng.permutation(len(pos)), pos)
+            b2 = permute_rows(base, rng.permutation(n))
         else:
-            def g(v):
-                if _is_pos(v, pos) or not (isinstance(v, np.ndarray) and v.ndim == 2 and v.shape[0] == len(pos)):
-                    return v
-                return rng.permutation(v.ravel()).reshape(v.shape)
-            b2 = {k: g(v) for k, v in base.items()} if isinstance(base, dict) else type(base)(g(v) for v in base)
+            b2 = _rebuild(base, [(k, (rng.permutation(np.asarray(v).ravel()).reshape(np.shape(v)) if k in perm else v))
+                                 for k, v in _fields(base)])
         c2 = build_map('scm', b2, sx, sy, law_field, CFG)
         if not (c2[1].shape == C.shape and np.array_equal(c2[1], C)):
             raise RuntimeError(f'[停止条件2] build_map 的候选坐标随历史 RSS 改变（mode={mode}）：G1 不是纯几何基线，需人工决策')
+
+
+# ---------- G3 等价性诊断 ----------
+# 原版 tobit_match 的 AP 掩码阈值：None = 假设"丢弃在全部候选上恒为 NO_SIGNAL 的 AP"（与 G3 全 AP 打分数学等价）。
+# TODO(服务器)：读真实 scripts/evaluate_scm_tobit.tobit_match 的 AP 筛选规则，把阈值填到 ORIG_AP_THRESH，并置
+#               ORIG_AP_THRESH_CONFIRMED=1（环境变量）；非 SMOKE 正式运行在未确认时拒绝启动。
+ORIG_AP_THRESH = None if os.environ.get('ORIG_AP_THRESH', '') == '' else float(os.environ['ORIG_AP_THRESH'])
+ORIG_AP_THRESH_CONFIRMED = os.environ.get('ORIG_AP_THRESH_CONFIRMED', '0') == '1'
+
+
+def g3_equiv_diag(qx, histF, C, law_match, pred_full):
+    """按原版阈值构造 AP 掩码，量化被丢弃 AP 对打分/定位的影响（总是记录）。"""
+    keep = (histF > (NO_SIGNAL if ORIG_AP_THRESH is None else ORIG_AP_THRESH)).any(0)
+    drop = ~keep
+    nd = int(drop.sum())
+    nonconst = int((np.ptp(histF[:, drop], axis=0) > 1e-10).sum()) if nd else 0
+    if nd:
+        Sd = tob_score(qx[:, drop], histF[:, drop], *law_match)
+        rng_q = Sd.max(1) - Sd.min(1)
+    else:
+        rng_q = np.zeros(len(qx))
+    p_keep = post_w(tob_score(qx[:, keep], histF[:, keep], *law_match)) @ C
+    return {'orig_ap_thresh': 'NO_SIGNAL' if ORIG_AP_THRESH is None else ORIG_AP_THRESH, 'n_ap_map': int(histF.shape[1]),
+            'n_dropped': nd, 'n_dropped_nonconst': nonconst, 'Sdrop_range_max': float(rng_q.max()),
+            'Sdrop_range_median': float(np.median(rng_q)), 'loc_diff_keep_vs_full_max': float(np.abs(p_keep - pred_full).max())}
+
+
+# ---------- 代码版本 ----------
+def core_code_version():
+    import inspect, subprocess
+    files = {SRC / 'pimfgp_heldout.py', SRC / 'diag_round2.py', SRC / 'scripts/evaluate_scm_tobit.py',
+             SRC / 'scripts/evaluate_signal_calibrated_map.py', Path(__file__).resolve()}
+    for fn in (build_map, prior_map, tobit_match, lookup, fit_law, cells, R2.field):
+        try:
+            files.add(Path(inspect.getsourcefile(fn)).resolve())
+        except TypeError:
+            pass
+    hashes = {}
+    for f in sorted(files):
+        if f.exists():
+            hashes[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+    combined = hashlib.sha256(json.dumps(sorted((Path(k).name, v) for k, v in hashes.items())).encode()).hexdigest()
+    sha = None
+    try:
+        r = subprocess.run(['git', '-C', str(SRC), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            sha = r.stdout.strip()
+            d = subprocess.run(['git', '-C', str(SRC), 'status', '--porcelain'], capture_output=True, text=True, timeout=10)
+            if d.stdout.strip():
+                sha += '+dirty:' + combined[:12]
+    except Exception:
+        pass
+    return {'core_code_version': sha or ('sha256:' + combined), 'source_sha256': {Path(k).name: v for k, v in hashes.items()}}
 
 
 # ---------- 源楼层选参 ----------
@@ -226,13 +309,18 @@ def shift_ok(C, t, tree, cap):
 def manifest(sel, law_field, law_match, anchor_match):
     m = {'methods': METH, 'nulls': NULLS, 'shifts': SHN, 'nperm': NPERM, 'nperm_pre': NPERM_PRE, 'seed': SEED,
          'far': FAR, 'smoke': SMOKE, 'hs': HS, 'gp_grid': [list(g) for g in GP_GRID], 'match_grid': [list(x) for x in MATCH],
-         'law_field': list(law_field), 'law_match': list(law_match), 'anchor_match': list(anchor_match)}
+         'law_field': list(law_field), 'law_match': list(law_match), 'anchor_match': list(anchor_match),
+         'prior_map_schema': PRIOR_MAP_SCHEMA, 'orig_ap_thresh': ORIG_AP_THRESH,
+         'orig_ap_thresh_confirmed': ORIG_AP_THRESH_CONFIRMED}
+    m.update(core_code_version())
     m['hash'] = hashlib.sha1(json.dumps(m, sort_keys=True, default=str).encode()).hexdigest()[:12]
     return m
 
 
 def main(building):
     t0 = time.time(); building = int(building)
+    if not SMOKE and not ORIG_AP_THRESH_CONFIRMED:
+        raise RuntimeError('正式运行前必须在服务器上确认原版 tobit_match 的 AP 筛选阈值（设 ORIG_AP_THRESH 与 ORIG_AP_THRESH_CONFIRMED=1）')
     OUT.mkdir(parents=True, exist_ok=True)
 
     def log(*a):
@@ -261,7 +349,14 @@ def main(building):
     shcols = [f'{sh}:{x}' for sh in SHN for x in ('valid', 'SH', 'G1', 'G3')]
     qw.writerow(['building', 'floor', 'draw', 'K', 'split', 'qid', 'loc_id', 'x', 'y', 'd_min', 'n_det_all', 'n_det_used',
                  'phone', 'd_C', 'd_orc'] + METH + shcols)
-    nullrows, eq_max, shinfo = [], 0.0, []
+    nullrows, eq_max, shinfo, eqdiag, g4diag = [], 0.0, [], [], []
+
+    def write_diag():
+        for fn, rows in ((f'g3_equiv_b{building}.csv', eqdiag), (f'g4pre_diag_b{building}.csv', g4diag)):
+            if rows:
+                with open(OUT / fn, 'w', newline='') as fh:
+                    w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+
     tnames = targets_of(building)[:1] if SMOKE else targets_of(building)
     for name in tnames:
         sp = splits[name]; new, val = tr[name], va[name]
@@ -284,9 +379,9 @@ def main(building):
             A = np.flatnonzero((sx != 100).any(0)); ap = aproto[:, A]
             cand = build_map('scm', base_other, sx, sy, law_field, CFG)
             C = cand[1]
-            bpos = base_positions(base_other, C)
+            base_positions(base_other, C)
             if not checked:
-                check_C_invariant(base_other, bpos, C, sx, sy, law_field, np.random.default_rng(5))
+                check_C_invariant(base_other, C, sx, sy, law_field, np.random.default_rng(5))
                 checked = True
             histF = np.asarray(cand[0], float)        # 地图全部 AP（原版 law_other 的信息集）
             hist = histF[:, A]                         # K 锚点检出 AP
@@ -303,14 +398,35 @@ def main(building):
             # G4_pre：先置换输入，再用同一 K 锚点重新校准（每次 build_map / gp_field，参数固定）
             pre_full, pre_b = [], []
             for pi in pperm:
-                cp = build_map('scm', permute_rows(base_other, pi, bpos), sx, sy, law_field, CFG)
+                cp = build_map('scm', permute_rows(base_other, pi), sx, sy, law_field, CFG)
                 assert np.array_equal(cp[1], C), 'G4_pre: 置换后 build_map 候选坐标变化'
                 hp = np.asarray(cp[0], float)
                 pre_full.append(hp)
-                # G4b_pre：hist_π = 置换后重新 scm 校准的地图（限 K 锚点检出 AP）；若 build_map 对行置换等变则 = hist[π]。
-                # 每次重做 GP：mean_s=lookup(axy,C,hist_π,3)，gp_field 用固定 GP 核/正则（不重新寻优），匹配参数也固定。
+                # G4b_pre：hist_π = 置换后重新 scm 校准的地图（限 K 锚点检出 AP），每次重做 GP（固定 GP 核/正则，不重新寻优），匹配参数固定。
                 hpa = hp[:, A]
                 pre_b.append(gp_field(ap, axy, C, lookup(axy, C, hpa, 3), hpa, gp3))
+            # G4_pre 诊断（一次确定性置换 π0 + 全部 pre 置换的汇总）
+            pi0 = np.random.default_rng(12345).permutation(len(C))
+            b0 = rss_field(base_other)
+            c0 = np.asarray(build_map('scm', permute_rows(base_other, pi0), sx, sy, law_field, CFG)[0], float)
+
+            def calib(Hcal, Hin):  # scm 校准量的代理：校准后 − 校准前（逐 AP 平均偏移 + 整体幅度）
+                d = Hcal - Hin
+                return d.mean(0), float(np.abs(d).mean())
+
+            def anc_res(Hcal):  # 目标锚点处残差（只计锚点检出条目）
+                m = lookup(axy, C, Hcal[:, A], 1); det = ap > NO_SIGNAL
+                return float(np.abs((m - ap)[det]).mean()) if det.any() else float('nan')
+
+            off0, mag0 = calib(histF, b0); offp, magp = calib(c0, b0[pi0])
+            F3p0 = gp_field(ap, axy, C, lookup(axy, C, c0[:, A], 3), c0[:, A], gp3)
+            g4diag.append(dict(floor=name, draw=draw, K=str(k), n_cand=len(C),
+                               calib_mag_orig=mag0, calib_mag_perm=magp,
+                               calib_offset_diff_max=float(np.abs(off0 - offp).max()),
+                               anchor_resid_orig=anc_res(histF), anchor_resid_perm_pi0=anc_res(c0),
+                               anchor_resid_perm_mean=float(np.nanmean([anc_res(h) for h in pre_full])) if pre_full else float('nan'),
+                               gp_corr_orig=float(np.abs(F3 - hist).mean()), gp_corr_perm_pi0=float(np.abs(F3p0 - c0[:, A]).mean()),
+                               equivariance_maxdiff=float(np.abs(c0 - histF[pi0]).max())))
             tree = cKDTree(C); tree_o = cKDTree(Corc)
             nn = tree.query(C, k=2)[0][:, 1]
             cap = 2.0 * float(np.median(nn))
@@ -337,15 +453,15 @@ def main(building):
                 pred['G3'] = post_w(S3) @ C
                 ref = tobit_match(qx, *cand, *law_match)
                 delta = float(np.max(np.abs(ref - pred['G3'])))
+                dg = g3_equiv_diag(qx, histF, C, law_match, pred['G3'])
+                eqdiag.append(dict(floor=name, draw=draw, K=str(k), split=split, max_delta_vs_tobit_match=delta, **dg))
                 if not np.allclose(ref, pred['G3'], atol=EQ_TOL, rtol=EQ_TOL):
                     m_full = set(np.flatnonzero((histF > NO_SIGNAL).any(0)).tolist())
                     m_res = set(A.tolist())
+                    print('[G3 等价性失败] 诊断：', json.dumps(dg), flush=True)
                     print('AP 掩码差集：地图有信号而 K 锚点未检出', sorted(m_full - m_res)[:50],
                           '；K 锚点检出而地图无信号', sorted(m_res - m_full)[:50], flush=True)
-                    for thr in (-105.0, -100.0):  # 常见检出阈值：提示原版 tobit_match 可能使用的 AP 掩码
-                        m_t = set(np.flatnonzero((histF > thr).any(0)).tolist())
-                        print(f'  地图 AP 掩码(>NO_SIGNAL) 与 (>{thr}) 差集大小 = {len(m_full - m_t)}；'
-                              f'G3 用全 AP，若原版按阈值筛 AP 则需对齐 G3 的信息集', flush=True)
+                    write_diag()
                 assert np.allclose(ref, pred['G3'], atol=EQ_TOL, rtol=EQ_TOL), f"G3 != law_other: max delta={delta}"
                 eq_max = max(eq_max, delta)
                 pred['G3_restrictedAP'] = post_w(tob_score(q, hist, *law_match)) @ C
@@ -387,6 +503,7 @@ def main(building):
                         **{key: np.stack([r[key] for r in nullrows]) for key in keys})
     with open(OUT / f'shift_domain_b{building}.csv', 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=list(shinfo[0])); w.writeheader(); w.writerows(shinfo)
+    write_diag()
     meta['law_other_equiv_max_delta'] = eq_max
     meta['elapsed_s'] = round(time.time() - t0, 1)
     (OUT / f'select_b{building}.json').write_text(json.dumps(meta, indent=1, default=str))

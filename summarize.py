@@ -3,7 +3,11 @@
   loc  = 先在稳定物理位置 loc_id 内平均（跨 draw/扫描），再对位置等权平均；bootstrap 对位置重抽（主口径：“随机抽一个物理位置”的误差）
   scan = Σ误差/Σ条数（扫描/查询行加权）；仅作参考
 主报告单位 = 目标建筑；三栋合并（target_building=all，建筑等权、建筑内分层重抽）不是“任意新建筑”的泛化区间。
-预注册主判据（PASS）：远距查询（d_min≥20 m）上 Δ_wireless = E(G1) − E(G3) 的位置聚类 bootstrap 95% 下界 > 0。
+预注册主判据（冻结）：远距查询（d_min≥20 m）上 Δ_wireless = E(G1) − E(G3)，lo = 位置聚类 bootstrap 双侧 95% 百分位区间的 2.5% 下界：
+  pass_stat      = lo > 0
+  pass_practical = lo > DELTA_MIN = 1.0 m   （主线闸门）
+  pass_strong    = lo > 2.0 m
+  不使用 TOST（检验的是最小效应，不是等价性）。robust_* 列为非约束性稳健性诊断。
   跨 K 汇总权重预先规定为各 K 等权（K∈{3,5,10,20,30,full} 中有远距查询者），不按扫描数加权。
   置换零分布（G4_post / G4_pre）只作探索性诊断列（explore_*），不进入 PASS；置换比例不是严格 p 值。
 输入一致性校验失败（perq 与 null 分组/n_far 不对应、manifest 不一致）→ PASS 列写 INVALID。"""
@@ -15,6 +19,8 @@ import numpy as np
 RUN = Path(sys.argv[1]); TAB = RUN / 'tables'; TAB.mkdir(exist_ok=True)
 EDGES = np.array([0, 5, 10, 20, 40, np.inf]); BL = ['0-5', '5-10', '10-20', '20-40', '40+']
 NB = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
+DELTA_MIN = 1.0   # 预注册主线闸门（m）
+DELTA_STRONG = 2.0
 KORDER = ['3', '5', '10', '20', '30', 'full']
 rng = np.random.default_rng(0)
 
@@ -58,6 +64,9 @@ problems = []
 hashes = {b: m['hash'] for b, m in MAN.items()}
 if len(set(hashes.values())) != 1:
     problems.append(f'manifest hash 不一致 {hashes}')
+vers = {b: m.get('core_code_version') for b, m in MAN.items()}
+if None in vers.values() or len(set(vers.values())) != 1:
+    problems.append(f'core_code_version 缺失或跨建筑不一致 {vers}')
 for b, m in MAN.items():
     if m['methods'] != METH or m['shifts'] != SHN or m['nulls'] != NULLS:
         problems.append(f'b{b} 方法列表不一致')
@@ -220,6 +229,27 @@ def null_far(b, s, k, nm):
 t4 = []
 TESTS = (('G3_vs_G1', 'G1', 'G3', ('G4_post', 'G4_pre')), ('G3b_vs_G2', 'G2', 'G3b', ('G4b_post', 'G4b_pre')),
          ('G3restrictedAP_vs_G1', 'G1', 'G3_restrictedAP', ()))
+KTREND = [k for k in ('5', '10', '20') if k in KS]
+
+
+def gate(lo, thr):
+    if lo != lo:
+        return 'NA'
+    return 'INVALID' if not VALID else bool(lo > thr)
+
+
+def sgn(x):
+    return '' if x != x else ('+' if x > 0 else ('-' if x < 0 else '0'))
+
+
+est_cache = {}
+for s_ in SPL:  # 先算每个 建筑×K 的点估计，供稳健性列使用
+    for b in BUILD:
+        for k in KS:
+            for tname, ref, tgt, _ in TESTS:
+                m = (SP == s_) & (B == b) & FARM & (K == k)
+                if m.any():
+                    u, ss, nn = loc_sums(m, E[ref] - E[tgt]); est_cache[(s_, b, k, tname)] = float((ss / nn).mean())
 for s in SPL:
     for b in BUILD + ['all']:
         for k in KS + ['crossK']:
@@ -238,7 +268,25 @@ for s in SPL:
                         est, lo, hi, nl, nr = boot(m, d); wt = 'loc'
                 if nr == 0:
                     continue
-                passed = ('INVALID' if not VALID else bool(lo > 0)) if lo == lo else 'NA'
+                # 稳健性（非约束）：分建筑符号/大小；K=5/10/20 趋势一致性
+                if b == 'all':
+                    kk = [k] if k != 'crossK' else KS
+                    per_b = []
+                    for bb in BUILD:
+                        v = [est_cache.get((s, bb, x, tname), np.nan) for x in kk]
+                        per_b.append(np.nanmean(v) if np.isfinite(v).any() else np.nan)
+                    rb_signs = '/'.join(f'B{bb}:{sgn(v)}' for bb, v in zip(BUILD, per_b))
+                    rb_min = R(np.nanmin(per_b)) if np.isfinite(per_b).any() else ''
+                    rb_npos = int(np.sum(np.array(per_b) > 0))
+                else:
+                    rb_signs, rb_min, rb_npos = f'B{b}:{sgn(est)}', R(est), int(est > 0)
+                bset = BUILD if b == 'all' else [b]
+                trend = []
+                for x in KTREND:
+                    v = [est_cache.get((s, bb, x, tname), np.nan) for bb in bset]
+                    trend.append(np.nanmean(v) if np.isfinite(v).any() else np.nan)
+                kt_signs = '/'.join(f'K{x}:{sgn(v)}' for x, v in zip(KTREND, trend))
+                kt_consistent = bool(len(trend) > 0 and np.isfinite(trend).all() and (np.all(np.array(trend) > 0) or np.all(np.array(trend) < 0)))
                 ex = []
                 for nm in ('post', 'pre'):
                     nmm = [x for x in nls if x.endswith(nm)]
@@ -250,10 +298,14 @@ for s in SPL:
                     dw_scan = E[ref][m].mean() - E[tgt][m].mean()
                     q95 = np.percentile(dnull, 95)
                     ex += [R(np.median(dnull)), R(q95), bool(dw_scan > q95)]
-                t4.append([s, b, k, tname, ref, tgt, nr, nl, wt, R(est), R(lo), R(hi), passed] + ex)
+                t4.append([s, b, k, tname, ref, tgt, nr, nl, wt, R(est), R(lo), R(hi),
+                           gate(lo, 0.0), gate(lo, DELTA_MIN), gate(lo, DELTA_STRONG),
+                           rb_signs, rb_npos, rb_min, kt_signs, kt_consistent] + ex)
 wcsv('T4_preregistered_criterion.csv',
      ['split', 'target_building', 'K', 'test', 'reference', 'target', 'n_far_query', 'n_far_locations', 'weighting',
-      'Delta_wireless', 'ci2.5', 'ci97.5', 'PASS',
+      'Delta_wireless', 'ci2.5', 'ci97.5', 'pass_stat(lo>0)', f'pass_practical(lo>{DELTA_MIN})', f'pass_strong(lo>{DELTA_STRONG})',
+      'robust_building_signs', 'robust_n_buildings_pos', 'robust_min_building_est', 'robust_K5_10_20_signs',
+      'robust_K5_10_20_consistent',
       'explore_post_null_median', 'explore_post_null_Q95', 'explore_post_dw_scan_gt_Q95',
       'explore_pre_null_median', 'explore_pre_null_Q95', 'explore_pre_dw_scan_gt_Q95'], t4)
 
@@ -316,4 +368,4 @@ print('VALID' if VALID else 'INVALID:\n' + '\n'.join(problems[:20]))
 print('rows', len(rows))
 for x in t4:
     if x[2] == 'crossK':
-        print(x[:13])
+        print(x[:20])
