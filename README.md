@@ -66,3 +66,8 @@ UJIIndoorLoc 少标定点（few-shot）跨楼栋 WiFi 指纹定位的研究代�
 - leave-one-building-out：三栋楼各留出一栋做 target，其余做 source。
 - 所有超参数、地图线性对齐参数只在 **源楼栋楼层对** 上选；目标楼的 query 标签 **只用于最终打分**，绝不参与任何选择、对齐或调参。
 - K ∈ {3,5,10,20,30,full}，每 K 多次抽样；内部 query split 与官方 query split 都报，正式跨楼结论以官方 split + 合法几何 C 为准。
+
+## 服务器适配（2026-10-17）
+真实模块快照与已确认事实见 `server_core/README.md`。`mapsep.py` 默认值已改为真实结构
+（schema `{"permute":[0],"fixed":[1]}`、`ORIG_AP_THRESH=none`、候选集含锚点行）；`mock/` 是旧 mock 结构（dict prior_map、无锚点行），
+不再与默认值兼容，仅作历史参考。core_code_version = `femloc@<FeMLoc git SHA>|files-sha256:<heldout+FeMLoc+mapsep 源文件联合哈希前16位>`。

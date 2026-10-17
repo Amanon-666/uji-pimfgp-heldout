@@ -33,6 +33,7 @@ from scipy.special import log_ndtr, logsumexp
 SRC = Path(os.environ.get('HELDOUT_DIR', '/home/panyushuo/projects/panyushuo/UJI-PIMFGP-Heldout-20261017'))
 sys.path.insert(0, str(SRC))
 os.chdir(SRC)
+_SMOKE_ENV = os.environ.pop('SMOKE', '0')  # pimfgp_heldout 在 import 时读 SMOKE；本实验用其完整网格，自身另行缩小
 import pimfgp_heldout as H  # noqa
 import diag_round2 as R2  # noqa
 from pimfgp_heldout import (BUILDINGS, CFG, NO_SIGNAL, SPLITS, TRAIN, VALID, build_map, cells, dbm, episodes,
@@ -41,10 +42,12 @@ from pimfgp_heldout import (BUILDINGS, CFG, NO_SIGNAL, SPLITS, TRAIN, VALID, bui
 from scripts.evaluate_scm_tobit import tobit_match  # noqa
 from scripts.evaluate_signal_calibrated_map import lookup  # noqa
 
-SMOKE = os.environ.get('SMOKE', '0') == '1'
+SMOKE = _SMOKE_ENV == '1'
+if SMOKE:  # smoke：K∈{5,20}，每 K 2 个 draw（直接改 pimfgp_heldout.supports 读取的模块常量）
+    H.KS = [5, 20]
+    H.DRAWS = 2
 OUT = Path(os.environ.get('OUT', '/home/panyushuo/projects/panyushuo/UJI-P0-MapSep-20261017')) / ('smoke' if SMOKE else 'run')
 PREV = SRC / 'results'
-KS_SMOKE = {'5', '20'}
 NPERM = int(os.environ.get('NPERM', '50' if SMOKE else '999'))
 NPERM_PRE = int(os.environ.get('NPERM_PRE', '20' if SMOKE else '199'))
 SEED = 1000
@@ -101,9 +104,9 @@ def err(p, t):
 # ---------- 历史地图整行置换（build_map 之前） ----------
 # prior_map 返回结构必须显式声明：PERMUTE = 随"行=地图位置"整行置换的 RSS/信号字段；FIXED = 保持不动的几何字段。
 # 任何未声明、且首维 = 位置数的数组 → 直接报错（逼迫在真实服务器上显式声明 prior_map 的真实结构）。
-# 默认值对应本仓库 mock 的 prior_map（dict: 'p' 指纹, 'xy' 坐标）。
-# TODO(服务器)：读真实 pimfgp_heldout.prior_map 后在此（或用环境变量 PRIOR_MAP_SCHEMA='{"permute":[..],"fixed":[..]}'）声明。
-PRIOR_MAP_SCHEMA = json.loads(os.environ.get('PRIOR_MAP_SCHEMA', '{"permute": ["p"], "fixed": ["xy"]}'))
+# 已在服务器确认（FeMLoc-Signal-Calibrated-Map/models/cross_floor.py::prior_map）：返回 tuple (x, lc["xy"])，
+#   x = (N_cells, 520) 插补 dBm 指纹（置换），lc["xy"] = (N_cells, 2) 旧层格点坐标（固定）。mock 需设环境变量覆盖。
+PRIOR_MAP_SCHEMA = json.loads(os.environ.get('PRIOR_MAP_SCHEMA', '{"permute": [0], "fixed": [1]}'))
 
 
 def _fields(base):
@@ -152,12 +155,24 @@ def rss_field(base):
     return np.asarray(dict(_fields(base))[_key(PRIOR_MAP_SCHEMA['permute'][0])], float)
 
 
-def base_positions(base, C):
-    """几何字段必须与 build_map 候选坐标 C 一致（确认"行=位置"）；否则停止。"""
-    _, pos = schema_check(base)
-    if not (pos.shape == C.shape and np.allclose(pos, C)):
-        raise RuntimeError('prior_map 几何字段与 build_map 候选坐标 C 不一致；G4_pre 的整行置换无法确认，停止（需人工决策）')
-    return pos
+def base_positions(base, C, axy):
+    """真实 build_map('scm') 返回 vstack([校准后旧层格点, K 锚点原型]) 与 vstack([旧层坐标, 锚点坐标])。
+    断言 C[:N] = prior_map 几何字段、C[N:] = 锚点坐标；返回历史部分行数 N。置换/平移只作用于前 N 行（历史地图分区），锚点行固定。"""
+    n, pos = schema_check(base)
+    if not (len(C) == n + len(axy) and np.allclose(C[:n], pos) and np.array_equal(C[n:], axy)):
+        raise RuntimeError('build_map 候选坐标 ≠ [prior_map 几何; 锚点坐标]；G4 的整行置换无法确认，停止（需人工决策）')
+    return n
+
+
+def full_perm(pi, n, m):
+    """历史部分置换 + 锚点行恒等。"""
+    return np.concatenate([pi, np.arange(n, m)])
+
+
+def with_anchor_rows(P, ap, n):
+    """候选集 C 的锚点行（C[n:]）一律用锚点自身原型，与 law_other 的候选集/输出能力一致。"""
+    P = P.copy(); P[n:] = ap
+    return P
 
 
 def check_C_invariant(base, C, sx, sy, law_field, rng):
@@ -176,16 +191,19 @@ def check_C_invariant(base, C, sx, sy, law_field, rng):
 
 
 # ---------- G3 等价性诊断 ----------
-# 原版 tobit_match 的 AP 掩码阈值：None = 假设"丢弃在全部候选上恒为 NO_SIGNAL 的 AP"（与 G3 全 AP 打分数学等价）。
-# TODO(服务器)：读真实 scripts/evaluate_scm_tobit.tobit_match 的 AP 筛选规则，把阈值填到 ORIG_AP_THRESH，并置
-#               ORIG_AP_THRESH_CONFIRMED=1（环境变量）；非 SMOKE 正式运行在未确认时拒绝启动。
-ORIG_AP_THRESH = None if os.environ.get('ORIG_AP_THRESH', '') == '' else float(os.environ['ORIG_AP_THRESH'])
-ORIG_AP_THRESH_CONFIRMED = os.environ.get('ORIG_AP_THRESH_CONFIRMED', '0') == '1'
+# 已在服务器确认（scripts/evaluate_scm_tobit.py::tobit_match）：对传入 protos 的全部 520 列打分，不做任何 AP 筛选
+#   → ORIG_AP_THRESH='none'（不丢弃任何 AP）。可用环境变量覆盖（'' = 旧假设：丢弃恒为 NO_SIGNAL 的 AP；数字 = 阈值）。
+_T = os.environ.get('ORIG_AP_THRESH', 'none')
+ORIG_AP_THRESH = 'none' if _T == 'none' else (None if _T == '' else float(_T))
+ORIG_AP_THRESH_CONFIRMED = os.environ.get('ORIG_AP_THRESH_CONFIRMED', '1') == '1'
 
 
 def g3_equiv_diag(qx, histF, C, law_match, pred_full):
     """按原版阈值构造 AP 掩码，量化被丢弃 AP 对打分/定位的影响（总是记录）。"""
-    keep = (histF > (NO_SIGNAL if ORIG_AP_THRESH is None else ORIG_AP_THRESH)).any(0)
+    if ORIG_AP_THRESH == 'none':
+        keep = np.ones(histF.shape[1], bool)
+    else:
+        keep = (histF > (NO_SIGNAL if ORIG_AP_THRESH is None else ORIG_AP_THRESH)).any(0)
     drop = ~keep
     nd = int(drop.sum())
     nonconst = int((np.ptp(histF[:, drop], axis=0) > 1e-10).sum()) if nd else 0
@@ -205,7 +223,7 @@ def core_code_version():
     import inspect, subprocess
     files = {SRC / 'pimfgp_heldout.py', SRC / 'diag_round2.py', SRC / 'scripts/evaluate_scm_tobit.py',
              SRC / 'scripts/evaluate_signal_calibrated_map.py', Path(__file__).resolve()}
-    for fn in (build_map, prior_map, tobit_match, lookup, fit_law, cells, R2.field):
+    for fn in (build_map, prior_map, tobit_match, lookup, fit_law, cells, R2.field, load_floors, kde_logprior, H.fit_transfer):
         try:
             files.add(Path(inspect.getsourcefile(fn)).resolve())
         except TypeError:
@@ -216,16 +234,19 @@ def core_code_version():
             hashes[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
     combined = hashlib.sha256(json.dumps(sorted((Path(k).name, v) for k, v in hashes.items())).encode()).hexdigest()
     sha = None
+    gitdir = Path(inspect.getsourcefile(build_map)).resolve().parents[1]  # FeMLoc-Signal-Calibrated-Map（git worktree）；heldout 目录不是 git
     try:
-        r = subprocess.run(['git', '-C', str(SRC), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(['git', '-C', str(gitdir), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
             sha = r.stdout.strip()
-            d = subprocess.run(['git', '-C', str(SRC), 'status', '--porcelain'], capture_output=True, text=True, timeout=10)
+            d = subprocess.run(['git', '-C', str(gitdir), 'status', '--porcelain', '--untracked-files=no'],
+                               capture_output=True, text=True, timeout=10)
             if d.stdout.strip():
                 sha += '+dirty:' + combined[:12]
     except Exception:
         pass
-    return {'core_code_version': sha or ('sha256:' + combined), 'source_sha256': {Path(k).name: v for k, v in hashes.items()}}
+    ver = (f'femloc@{sha}' if sha else 'femloc@nogit') + f'|files-sha256:{combined[:16]}'  # files 含 heldout(非 git)+FeMLoc+本脚本
+    return {'core_code_version': ver, 'source_sha256': {str(Path(k).relative_to(Path(k).parents[1])): v for k, v in hashes.items()}}
 
 
 # ---------- 源楼层选参 ----------
@@ -248,19 +269,20 @@ def source_select(tr, src_pairs, law, Cc, law_field, log):
             ap = aproto[:, A]
             cand = build_map('scm', base, sx, sy, law_field, CFG)
             C = cand[1]
-            Gb = support_grid(sy)
+            nh = base_positions(base, C, axy)
+            Gb = np.vstack([support_grid(sy), axy]); ng = len(Gb) - len(axy)
             lpC = kde_logprior(C, sy)
             for h in HS:
-                for nm, grid in (('G0', Gb), ('G1', C)):
-                    P = kernel_protos(ap, axy, grid, h)
+                for nm, grid, nn_ in (('G0', Gb, ng), ('G1', C, nh)):
+                    P = with_anchor_rows(kernel_protos(ap, axy, grid, h), ap, nn_)
                     for st in MATCH:
                         add((nm, h, st), err(post_w(tob_score(qx[:, A], P, *st)) @ grid, qy).mean())
             mC = np.tile(ap.mean(0), (len(C), 1)); ms = np.tile(ap.mean(0), (len(axy), 1))
             hist = cand[0][:, A]
             hist_s = lookup(axy, C, hist, 3)
             for gp in GP_GRID:
-                F2 = gp_field(ap, axy, C, ms, mC, gp)
-                F3 = gp_field(ap, axy, C, hist_s, hist, gp)
+                F2 = with_anchor_rows(gp_field(ap, axy, C, ms, mC, gp), ap, nh)
+                F3 = with_anchor_rows(gp_field(ap, axy, C, hist_s, hist, gp), ap, nh)
                 for st in MATCH:
                     add(('G2', gp, st), err(post_w(tob_score(qx[:, A], F2, *st) + lpC[None]) @ C, qy).mean())
                     add(('G3b', gp, st), err(post_w(tob_score(qx[:, A], F3, *st) + lpC[None]) @ C, qy).mean())
@@ -284,7 +306,9 @@ def csv_meta():
             r = csv.reader(fh); hdr = next(r); ix = {c: hdr.index(c) for c in hdr[520:]}
             rows = [(row[ix['PHONEID']], row[ix['FLOOR']], row[ix['BUILDINGID']], row[ix['SPACEID']],
                      row[ix['RELATIVEPOSITION']], row[ix['LONGITUDE']], row[ix['LATITUDE']]) for row in r]
-        a = np.array(rows, dtype=object)
+        rows = [None] + rows  # data.uji.load_floors 的 row_ids 从 1 开始（enumerate(DictReader, 1)）
+        a = np.array(rows[1:], dtype=object)
+        a = np.vstack([np.full((1, a.shape[1]), '-1', dtype=object), a])
         ph = a[:, 0].astype(int); fl = a[:, 1].astype(int); bd = a[:, 2].astype(int)
         if tag == 'train':
             lid = np.array([f'B{b}F{f}:S{s}:R{p}' for b, f, s, p in zip(bd, fl, a[:, 3], a[:, 4])])
@@ -371,30 +395,30 @@ def main(building):
         Corc = np.unique(new['xy'], axis=0)  # 借用测试覆盖：目标楼层自身全部训练参考点（仅 oracle 对照）
         checked = False
         for draw, k, ids in supports(sp):
-            if SMOKE and str(k) not in KS_SMOKE:
-                continue
+            t_ep = time.time()
             s = np.array([pos[int(r)] for r in ids])
             sx, sy = new['rssi'][s], new['xy'][s]
             aproto, axy, _ = position_map(sx, sy)
             A = np.flatnonzero((sx != 100).any(0)); ap = aproto[:, A]
             cand = build_map('scm', base_other, sx, sy, law_field, CFG)
             C = cand[1]
-            base_positions(base_other, C)
+            nh = base_positions(base_other, C, axy)
             if not checked:
                 check_C_invariant(base_other, C, sx, sy, law_field, np.random.default_rng(5))
                 checked = True
             histF = np.asarray(cand[0], float)        # 地图全部 AP（原版 law_other 的信息集）
             hist = histF[:, A]                         # K 锚点检出 AP
-            Gb = support_grid(sy); lpC = kde_logprior(C, sy)
-            P0 = kernel_protos(ap, axy, Gb, sel['G0']['p'])
-            P1 = kernel_protos(ap, axy, C, sel['G1']['p'])
+            Gb = np.vstack([support_grid(sy), axy]); lpC = kde_logprior(C, sy)
+            P0 = with_anchor_rows(kernel_protos(ap, axy, Gb, sel['G0']['p']), ap, len(Gb) - len(axy))
+            P1 = with_anchor_rows(kernel_protos(ap, axy, C, sel['G1']['p']), ap, nh)
             P1o = kernel_protos(ap, axy, Corc, sel['G1']['p'])
             mC = np.tile(ap.mean(0), (len(C), 1)); ms = np.tile(ap.mean(0), (len(axy), 1))
-            F2 = gp_field(ap, axy, C, ms, mC, sel['G2']['p'])
+            F2 = with_anchor_rows(gp_field(ap, axy, C, ms, mC, sel['G2']['p']), ap, nh)
             gp3 = sel['G3b']['p']
-            F3 = gp_field(ap, axy, C, lookup(axy, C, hist, 3), hist, gp3)
-            perms = [rng.permutation(len(C)) for _ in range(NPERM)]
-            pperm = [rng.permutation(len(C)) for _ in range(NPERM_PRE)]
+            F3 = with_anchor_rows(gp_field(ap, axy, C, lookup(axy, C, hist, 3), hist, gp3), ap, nh)
+            perms = [full_perm(rng.permutation(nh), nh, len(C)) for _ in range(NPERM)]
+            pperm = [rng.permutation(nh) for _ in range(NPERM_PRE)]
+            tp0 = time.time()
             # G4_pre：先置换输入，再用同一 K 锚点重新校准（每次 build_map / gp_field，参数固定）
             pre_full, pre_b = [], []
             for pi in pperm:
@@ -404,37 +428,41 @@ def main(building):
                 pre_full.append(hp)
                 # G4b_pre：hist_π = 置换后重新 scm 校准的地图（限 K 锚点检出 AP），每次重做 GP（固定 GP 核/正则，不重新寻优），匹配参数固定。
                 hpa = hp[:, A]
-                pre_b.append(gp_field(ap, axy, C, lookup(axy, C, hpa, 3), hpa, gp3))
+                pre_b.append(with_anchor_rows(gp_field(ap, axy, C, lookup(axy, C, hpa, 3), hpa, gp3), ap, nh))
+            t_pre_build = (time.time() - tp0) / max(len(pperm), 1)
             # G4_pre 诊断（一次确定性置换 π0 + 全部 pre 置换的汇总）
-            pi0 = np.random.default_rng(12345).permutation(len(C))
+            pi0 = np.random.default_rng(12345).permutation(nh); pi0f = full_perm(pi0, nh, len(C))
             b0 = rss_field(base_other)
             c0 = np.asarray(build_map('scm', permute_rows(base_other, pi0), sx, sy, law_field, CFG)[0], float)
 
-            def calib(Hcal, Hin):  # scm 校准量的代理：校准后 − 校准前（逐 AP 平均偏移 + 整体幅度）
-                d = Hcal - Hin
+            def calib(Hcal, Hin):  # scm 校准量的代理：校准后历史行 − 校准前（逐 AP 平均偏移 + 整体幅度）
+                d = Hcal[:nh] - Hin
                 return d.mean(0), float(np.abs(d).mean())
 
-            def anc_res(Hcal):  # 目标锚点处残差（只计锚点检出条目）
-                m = lookup(axy, C, Hcal[:, A], 1); det = ap > NO_SIGNAL
+            def anc_res(Hh):  # 目标锚点处、由历史行（3 近邻，同 build_map 的 lookup）给出的残差；只计锚点检出条目
+                m = lookup(axy, C[:nh], Hh[:nh][:, A], CFG['anchor_lookup_neighbors']); det = ap > NO_SIGNAL
                 return float(np.abs((m - ap)[det]).mean()) if det.any() else float('nan')
 
             off0, mag0 = calib(histF, b0); offp, magp = calib(c0, b0[pi0])
             F3p0 = gp_field(ap, axy, C, lookup(axy, C, c0[:, A], 3), c0[:, A], gp3)
-            g4diag.append(dict(floor=name, draw=draw, K=str(k), n_cand=len(C),
+            g4diag.append(dict(floor=name, draw=draw, K=str(k), n_cand=len(C), n_hist=nh, t_pre_perm_build_s=t_pre_build,
+                               anchor_resid_before_calib=anc_res(np.vstack([b0, np.zeros((len(C) - nh, b0.shape[1]))])),
                                calib_mag_orig=mag0, calib_mag_perm=magp,
                                calib_offset_diff_max=float(np.abs(off0 - offp).max()),
                                anchor_resid_orig=anc_res(histF), anchor_resid_perm_pi0=anc_res(c0),
                                anchor_resid_perm_mean=float(np.nanmean([anc_res(h) for h in pre_full])) if pre_full else float('nan'),
-                               gp_corr_orig=float(np.abs(F3 - hist).mean()), gp_corr_perm_pi0=float(np.abs(F3p0 - c0[:, A]).mean()),
-                               equivariance_maxdiff=float(np.abs(c0 - histF[pi0]).max())))
-            tree = cKDTree(C); tree_o = cKDTree(Corc)
-            nn = tree.query(C, k=2)[0][:, 1]
+                               gp_corr_orig=float(np.abs(F3[:nh] - hist[:nh]).mean()),
+                               gp_corr_perm_pi0=float(np.abs(F3p0[:nh] - c0[:nh, A]).mean()),
+                               equivariance_maxdiff=float(np.abs(c0 - histF[pi0f]).max())))
+            tree = cKDTree(C); tree_o = cKDTree(Corc); tree_h = cKDTree(C[:nh])
+            nn = tree_h.query(C[:nh], k=2)[0][:, 1]
             cap = 2.0 * float(np.median(nn))
             shm = {}
             for sft in SHIFTS:
                 for d, v in SHDIR:
                     nm = f'SH{int(sft)}{d}'
-                    idx, ok = shift_ok(C, sft * np.array(v, float), tree, cap)
+                    ih, oh = shift_ok(C[:nh], sft * np.array(v, float), tree_h, cap)
+                    idx = np.concatenate([ih, np.arange(nh, len(C))]); ok = np.concatenate([oh, np.ones(len(C) - nh, bool)])
                     shm[nm] = (idx, ok)
                     shinfo.append(dict(floor=name, draw=draw, K=str(k), shift=nm, n_cand=len(C), frac_ok=float(ok.mean())))
             for split, (qx, qy, qph, qlid) in queries.items():
@@ -495,6 +523,7 @@ def main(building):
                 for nm in NULLS:
                     nr[f'sum_all_{nm}'] = nul[nm].sum(1); nr[f'sum_far_{nm}'] = nul[nm][:, far].sum(1)
                 nullrows.append(nr)
+            log(f'{name} draw={draw} K={k} n_cand={len(C)} ep_s={time.time() - t_ep:.1f} pre_build_per_perm_s={t_pre_build:.4f}')
         log(name, 'done')
     qf.close()
     keys = [k for k in nullrows[0] if k.startswith('sum_')]
