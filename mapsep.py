@@ -46,7 +46,7 @@ SMOKE = _SMOKE_ENV == '1'
 if SMOKE:  # smoke：K∈{5,20}，每 K 2 个 draw（直接改 pimfgp_heldout.supports 读取的模块常量）
     H.KS = [5, 20]
     H.DRAWS = 2
-OUT = Path(os.environ.get('OUT', '/home/panyushuo/projects/panyushuo/UJI-P0-MapSep-20261017')) / ('smoke' if SMOKE else 'run')
+OUT = Path(os.environ.get('OUT', '/home/panyushuo/projects/panyushuo/UJI-P0-MapSep-20261017')) / ('smoke' if SMOKE else os.environ.get('RUN_SUBDIR', 'run'))
 PREV = SRC / 'results'
 NPERM = int(os.environ.get('NPERM', '50' if SMOKE else '999'))
 NPERM_PRE = int(os.environ.get('NPERM_PRE', '20' if SMOKE else '199'))
@@ -330,14 +330,25 @@ def shift_ok(C, t, tree, cap):
     return idx, d <= cap
 
 
+PROTOCOL_FIELDS = ['methods', 'nulls', 'shifts', 'nperm', 'nperm_pre', 'seed', 'seed_scheme', 'far', 'smoke', 'hs', 'gp_grid',
+                   'match_grid', 'e_src', 'qcap', 'shifts_m', 'prior_map_schema', 'orig_ap_thresh', 'orig_ap_thresh_confirmed',
+                   'core_code_version', 'source_sha256', 'mapsep_sha256']
+
+
 def manifest(sel, law_field, law_match, anchor_match):
+    """protocol 字段（跨建筑必须一致，参与 protocol_hash）与 per_building 字段（源楼栋选出、按建筑不同，只记录不比较）分开。"""
     m = {'methods': METH, 'nulls': NULLS, 'shifts': SHN, 'nperm': NPERM, 'nperm_pre': NPERM_PRE, 'seed': SEED,
+         'seed_scheme': 'episode rng = default_rng(SEED + building); source-select rng = default_rng(7)',
          'far': FAR, 'smoke': SMOKE, 'hs': HS, 'gp_grid': [list(g) for g in GP_GRID], 'match_grid': [list(x) for x in MATCH],
-         'law_field': list(law_field), 'law_match': list(law_match), 'anchor_match': list(anchor_match),
+         'e_src': E_SRC, 'qcap': QCAP, 'shifts_m': SHIFTS,
          'prior_map_schema': PRIOR_MAP_SCHEMA, 'orig_ap_thresh': ORIG_AP_THRESH,
-         'orig_ap_thresh_confirmed': ORIG_AP_THRESH_CONFIRMED}
+         'orig_ap_thresh_confirmed': ORIG_AP_THRESH_CONFIRMED,
+         'mapsep_sha256': hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()}
     m.update(core_code_version())
-    m['hash'] = hashlib.sha1(json.dumps(m, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    assert set(PROTOCOL_FIELDS) <= set(m), set(PROTOCOL_FIELDS) - set(m)
+    m['protocol_hash'] = hashlib.sha1(json.dumps({k: m[k] for k in PROTOCOL_FIELDS}, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    m['protocol_fields'] = PROTOCOL_FIELDS
+    m['per_building'] = {'law_field': list(law_field), 'law_match': list(law_match), 'anchor_match': list(anchor_match), 'sel': sel}
     return m
 
 
@@ -371,7 +382,7 @@ def main(building):
     qf = gzip.open(OUT / f'perq_b{building}.csv.gz', 'wt', newline='')
     qw = csv.writer(qf)
     shcols = [f'{sh}:{x}' for sh in SHN for x in ('valid', 'SH', 'G1', 'G3')]
-    qw.writerow(['building', 'floor', 'draw', 'K', 'split', 'qid', 'loc_id', 'x', 'y', 'd_min', 'n_det_all', 'n_det_used',
+    qw.writerow(['building', 'floor', 'draw', 'K', 'split', 'qid', 'loc_id', 'x', 'y', 'd_min', 'is_far', 'n_det_all', 'n_det_used',
                  'phone', 'd_C', 'd_orc'] + METH + shcols)
     nullrows, eq_max, shinfo, eqdiag, g4diag = [], 0.0, [], [], []
 
@@ -511,7 +522,7 @@ def main(building):
                     shE[nm] = (ok[qnear], err(post_w(S3[:, idx] + neg) @ C, qy), err(post_w(S1 + neg) @ C, qy),
                                err(post_w(S3 + neg) @ C, qy))
                 for j in range(len(qy)):
-                    row = [building, name, draw, k, split, j, qlid[j], f'{qy[j,0]:.2f}', f'{qy[j,1]:.2f}', f'{dmin[j]:.2f}',
+                    row = [building, name, draw, k, split, j, qlid[j], f'{qy[j,0]:.2f}', f'{qy[j,1]:.2f}', repr(float(dmin[j])), int(far[j]),
                            int(nall[j]), int(nused[j]), int(qph[j]), f'{dC[j]:.2f}',
                            f'{dO[j]:.2f}'] + [f'{E[m][j]:.3f}' for m in METH]
                     for nm in SHN:

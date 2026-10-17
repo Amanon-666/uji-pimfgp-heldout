@@ -1,0 +1,21 @@
+b0: rows=88026 cols_compared=75 cols_with_diff={} max_abs_numeric_diff=0.0
+    d_min: max|round(run2,2)-run|=0; far(run, rounded>=20) vs is_far(run2) mismatches=3
+    null sum_all_G4_post: max|diff|=0
+    null sum_all_G4_pre: max|diff|=0
+    null sum_all_G4b_post: max|diff|=0
+    null sum_all_G4b_pre: max|diff|=0
+    null sum_far max|diff|: {'sum_far_G4_post': 0.0, 'sum_far_G4b_post': 0.0, 'sum_far_G4_pre': 0.0, 'sum_far_G4b_pre': 0.0}
+b1: rows=64107 cols_compared=75 cols_with_diff={} max_abs_numeric_diff=0.0
+    d_min: max|round(run2,2)-run|=0; far(run, rounded>=20) vs is_far(run2) mismatches=19
+    null sum_all_G4_post: max|diff|=0
+    null sum_all_G4_pre: max|diff|=0
+    null sum_all_G4b_post: max|diff|=0
+    null sum_all_G4b_pre: max|diff|=0
+    null sum_far max|diff|: {'sum_far_G4_post': 0.0, 'sum_far_G4b_post': 0.0, 'sum_far_G4_pre': 0.0, 'sum_far_G4b_pre': 0.0}
+b2: rows=124593 cols_compared=75 cols_with_diff={} max_abs_numeric_diff=0.0
+    d_min: max|round(run2,2)-run|=0; far(run, rounded>=20) vs is_far(run2) mismatches=0
+    null sum_all_G4_post: max|diff|=0
+    null sum_all_G4_pre: max|diff|=0
+    null sum_all_G4b_post: max|diff|=0
+    null sum_all_G4b_pre: max|diff|=0
+    null sum_far max|diff|: {'sum_far_G4_post': 0.0, 'sum_far_G4b_post': 0.0, 'sum_far_G4_pre': 0.0, 'sum_far_G4b_pre': 0.0}

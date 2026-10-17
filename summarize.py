@@ -11,7 +11,7 @@
   跨 K 汇总权重预先规定为各 K 等权（K∈{3,5,10,20,30,full} 中有远距查询者），不按扫描数加权。
   置换零分布（G4_post / G4_pre）只作探索性诊断列（explore_*），不进入 PASS；置换比例不是严格 p 值。
 输入一致性校验失败（perq 与 null 分组/n_far 不对应、manifest 不一致）→ PASS 列写 INVALID。"""
-import csv, gzip, json, sys
+import csv, gzip, hashlib, json, sys
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -39,6 +39,8 @@ FAR = float(next(iter(MAN.values()))['far'])
 METH = next(iter(MAN.values()))['methods']; SHN = next(iter(MAN.values()))['shifts']
 NULLS = next(iter(MAN.values()))['nulls']
 
+if 'is_far' not in cols:
+    raise SystemExit('perq 缺少 is_far 列（旧格式）；拒绝从舍入的 d_min 重算 far')
 B = col('building').astype(int); FL = col('floor'); DR = col('draw').astype(int); K = col('K'); SP = col('split')
 LID = col('loc_id'); DM = col('d_min').astype(float); NDA = col('n_det_all').astype(int); NDU = col('n_det_used').astype(int)
 PH = col('phone').astype(int); DC = col('d_C').astype(float); DO = col('d_orc').astype(float)
@@ -47,7 +49,7 @@ E = {m: col(m).astype(float) for m in METH}
 SHV = {s: col(f'{s}:valid').astype(int).astype(bool) for s in SHN}
 SHE = {s: {x: col(f'{s}:{x}').astype(float) for x in ('SH', 'G1', 'G3')} for s in SHN}
 BK = np.clip(np.searchsorted(EDGES, DM, side='right') - 1, 0, 4)
-FARM = DM >= FAR
+FARM = col('is_far').astype(int).astype(bool)  # 直接用 mapsep 写出的 is_far（与 null 同一代码路径），不从 d_min 重算
 KS = [k for k in KORDER if (K == k).any()]
 SPL = [s for s in ['internal', 'official'] if (SP == s).any()]
 BUILD = sorted(np.unique(B).tolist())
@@ -61,9 +63,26 @@ def wcsv(name, header, data):
 
 # ---------- 一致性校验 ----------
 problems = []
-hashes = {b: m['hash'] for b, m in MAN.items()}
-if len(set(hashes.values())) != 1:
-    problems.append(f'manifest hash 不一致 {hashes}')
+# 只比较 protocol 字段；per_building（源楼栋选出的 law_field/law_match/anchor_match/sel）只记录不比较
+for b, m in MAN.items():
+    if 'protocol_hash' not in m or 'protocol_fields' not in m:
+        problems.append(f'b{b} manifest 缺少 protocol_hash/protocol_fields（旧格式）')
+if not problems:
+    pf = sorted(set().union(*[m['protocol_fields'] for m in MAN.values()]))
+    for k in pf:
+        vals = {b: json.dumps(m.get(k, '<missing>'), sort_keys=True, default=str) for b, m in MAN.items()}
+        if len(set(vals.values())) != 1:
+            problems.append(f'protocol 字段 {k!r} 跨建筑不一致 ' + str({b: v[:80] for b, v in vals.items()}))
+    for b, m in MAN.items():
+        h = hashlib.sha1(json.dumps({k: m[k] for k in m['protocol_fields']}, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        if h != m['protocol_hash']:
+            problems.append(f'b{b} protocol_hash 与字段内容不符')
+    hashes = {b: m['protocol_hash'] for b, m in MAN.items()}
+    if len(set(hashes.values())) != 1:
+        problems.append(f'protocol_hash 不一致 {hashes}')
+nfar_mismatch = int((FARM != (DM >= FAR)).sum())  # d_min 现为未舍入值：is_far 必须与之严格一致
+if nfar_mismatch:
+    problems.append(f'is_far 与未舍入 d_min>=FAR 不一致的行数 {nfar_mismatch}')
 vers = {b: m.get('core_code_version') for b, m in MAN.items()}
 if None in vers.values() or len(set(vers.values())) != 1:
     problems.append(f'core_code_version 缺失或跨建筑不一致 {vers}')
@@ -323,7 +342,7 @@ for b in BUILD:
             for sh in SHN:
                 m = base & SHV[sh]
                 if not m.any():
-                    t5.append([b, s, sub, sh, 0, R(0), R(np.mean(dom[(b, sh)])) if dom[(b, sh)] else ''] + [''] * 9); continue
+                    t5.append([b, s, sub, sh, 0, R(0), R(np.mean(dom[(b, sh)])) if dom[(b, sh)] else ''] + [''] * 8); continue  # 表头 15 列 = 7 + 8
                 d = SHE[sh]['SH'] - SHE[sh]['G3']
                 est, lo, hi, nl, nr = boot(m, d, 500)
                 d2 = SHE[sh]['G1'] - SHE[sh]['G3']
@@ -331,6 +350,7 @@ for b in BUILD:
                 t5.append([b, s, sub, sh, nr, R(m.sum() / max(base.sum(), 1)), R(np.mean(dom[(b, sh)])) if dom[(b, sh)] else '',
                            R(DM[m].mean()), R(SHE[sh]['G1'][m].mean()), R(SHE[sh]['G3'][m].mean()), R(SHE[sh]['SH'][m].mean()),
                            R(est), R(lo), R(hi), R(e2)])
+assert all(len(r) == 15 for r in t5), 'T5 行列数 != 15'
 wcsv('T5_shift_control.csv', ['target_building', 'split', 'subset', 'shift', 'n_valid_query', 'frac_query_valid',
                               'mean_frac_cand_ok', 'mean_dmin_valid', 'G1_t', 'G3_t', 'SH_t', 'SH_t-G3_t(loc)', 'ci2.5',
                               'ci97.5', 'G1_t-G3_t(loc)'], t5)

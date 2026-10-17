@@ -1,0 +1,415 @@
+{
+ "building": 0,
+ "sel": {
+  "G0": {
+   "p": 12.0,
+   "match": [
+    24.0,
+    -75.0
+   ],
+   "src_mde": 20.155745350722455
+  },
+  "G1": {
+   "p": 20.0,
+   "match": [
+    16.0,
+    -80.0
+   ],
+   "src_mde": 16.09444510621574
+  },
+  "G2": {
+   "p": [
+    40.0,
+    0.03
+   ],
+   "match": [
+    8.0,
+    -90.0
+   ],
+   "src_mde": 17.006264080940294
+  },
+  "G3b": {
+   "p": [
+    10.0,
+    1.0
+   ],
+   "match": [
+    8.0,
+    -90.0
+   ],
+   "src_mde": 12.820632850352668
+  }
+ },
+ "manifest": {
+  "methods": [
+   "anchors",
+   "wknn",
+   "G0",
+   "G1",
+   "G1orc",
+   "G2",
+   "G3",
+   "G3_restrictedAP",
+   "G3b",
+   "G4_post_mean",
+   "G4b_post_mean",
+   "G4_pre_mean",
+   "G4b_pre_mean"
+  ],
+  "nulls": [
+   "G4_post",
+   "G4b_post",
+   "G4_pre",
+   "G4b_pre"
+  ],
+  "shifts": [
+   "SH10+x",
+   "SH10-x",
+   "SH10+y",
+   "SH10-y",
+   "SH20+x",
+   "SH20-x",
+   "SH20+y",
+   "SH20-y",
+   "SH40+x",
+   "SH40-x",
+   "SH40+y",
+   "SH40-y"
+  ],
+  "nperm": 999,
+  "nperm_pre": 999,
+  "seed": 1000,
+  "seed_scheme": "episode rng = default_rng(SEED + building); source-select rng = default_rng(7)",
+  "far": 20.0,
+  "smoke": false,
+  "hs": [
+   3.0,
+   5.0,
+   8.0,
+   12.0,
+   20.0,
+   30.0
+  ],
+  "gp_grid": [
+   [
+    2.5,
+    0.03
+   ],
+   [
+    2.5,
+    0.1
+   ],
+   [
+    2.5,
+    0.3
+   ],
+   [
+    2.5,
+    1.0
+   ],
+   [
+    2.5,
+    3.0
+   ],
+   [
+    2.5,
+    10.0
+   ],
+   [
+    5.0,
+    0.03
+   ],
+   [
+    5.0,
+    0.1
+   ],
+   [
+    5.0,
+    0.3
+   ],
+   [
+    5.0,
+    1.0
+   ],
+   [
+    5.0,
+    3.0
+   ],
+   [
+    5.0,
+    10.0
+   ],
+   [
+    10.0,
+    0.03
+   ],
+   [
+    10.0,
+    0.1
+   ],
+   [
+    10.0,
+    0.3
+   ],
+   [
+    10.0,
+    1.0
+   ],
+   [
+    10.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0
+   ],
+   [
+    20.0,
+    0.03
+   ],
+   [
+    20.0,
+    0.1
+   ],
+   [
+    20.0,
+    0.3
+   ],
+   [
+    20.0,
+    1.0
+   ],
+   [
+    20.0,
+    3.0
+   ],
+   [
+    20.0,
+    10.0
+   ],
+   [
+    40.0,
+    0.03
+   ],
+   [
+    40.0,
+    0.1
+   ],
+   [
+    40.0,
+    0.3
+   ],
+   [
+    40.0,
+    1.0
+   ],
+   [
+    40.0,
+    3.0
+   ],
+   [
+    40.0,
+    10.0
+   ],
+   [
+    80.0,
+    0.03
+   ],
+   [
+    80.0,
+    0.1
+   ],
+   [
+    80.0,
+    0.3
+   ],
+   [
+    80.0,
+    1.0
+   ],
+   [
+    80.0,
+    3.0
+   ],
+   [
+    80.0,
+    10.0
+   ]
+  ],
+  "match_grid": [
+   [
+    8.0,
+    -90.0
+   ],
+   [
+    8.0,
+    -85.0
+   ],
+   [
+    8.0,
+    -80.0
+   ],
+   [
+    8.0,
+    -75.0
+   ],
+   [
+    12.0,
+    -90.0
+   ],
+   [
+    12.0,
+    -85.0
+   ],
+   [
+    12.0,
+    -80.0
+   ],
+   [
+    12.0,
+    -75.0
+   ],
+   [
+    16.0,
+    -90.0
+   ],
+   [
+    16.0,
+    -85.0
+   ],
+   [
+    16.0,
+    -80.0
+   ],
+   [
+    16.0,
+    -75.0
+   ],
+   [
+    24.0,
+    -90.0
+   ],
+   [
+    24.0,
+    -85.0
+   ],
+   [
+    24.0,
+    -80.0
+   ],
+   [
+    24.0,
+    -75.0
+   ]
+  ],
+  "e_src": 6,
+  "qcap": 300,
+  "shifts_m": [
+   10.0,
+   20.0,
+   40.0
+  ],
+  "prior_map_schema": {
+   "permute": [
+    0
+   ],
+   "fixed": [
+    1
+   ]
+  },
+  "orig_ap_thresh": "none",
+  "orig_ap_thresh_confirmed": true,
+  "mapsep_sha256": "79248293a053252d552ea1edcea87383475d6740be2320fd3840f5e5d352ed69",
+  "core_code_version": "femloc@ab1a60b17c7b85542755937c68f89d63ce26255c|files-sha256:89e1a5246e00ec15",
+  "source_sha256": {
+   "data/uji.py": "c023c46d95d934b960e19fe3a19c5b09bd78134150cbc09f1cbba7d5c9b2d933",
+   "models/cross_floor.py": "d0cad68e0a8a326ffbce5151b34012365beac1953c114834847553123335d6a7",
+   "models/radio_map.py": "731fb5a63e64a414ea56594ffefa12cfaeec68a6588411c32c8a3567acab2884",
+   "scripts/evaluate_scm_tobit.py": "4e53ebf7b908dda4a4e5236d013047dde5a1940a65294a944593c2b3dfe3ff60",
+   "scripts/evaluate_signal_calibrated_map.py": "4746a1fc589f8f5d0fa4f561017aa644893557ff5310abfea4ec34e52a18a3d7",
+   "code_v2/mapsep.py": "79248293a053252d552ea1edcea87383475d6740be2320fd3840f5e5d352ed69",
+   "UJI-PIMFGP-Heldout-20261017/diag_round2.py": "3e895cc325dc69702cabe9085797065b7ab1da6ebdee1ea72934174810d404e9",
+   "UJI-PIMFGP-Heldout-20261017/pimfgp_heldout.py": "2de478c396625b29697c0d7e96c98fc842c320611c26b6b9203917e58053e2d4"
+  },
+  "protocol_hash": "f3fb01175d86",
+  "protocol_fields": [
+   "methods",
+   "nulls",
+   "shifts",
+   "nperm",
+   "nperm_pre",
+   "seed",
+   "seed_scheme",
+   "far",
+   "smoke",
+   "hs",
+   "gp_grid",
+   "match_grid",
+   "e_src",
+   "qcap",
+   "shifts_m",
+   "prior_map_schema",
+   "orig_ap_thresh",
+   "orig_ap_thresh_confirmed",
+   "core_code_version",
+   "source_sha256",
+   "mapsep_sha256"
+  ],
+  "per_building": {
+   "law_field": [
+    40.0,
+    0.3
+   ],
+   "law_match": [
+    12.0,
+    -85.0
+   ],
+   "anchor_match": [
+    24.0,
+    -75.0
+   ],
+   "sel": {
+    "G0": {
+     "p": 12.0,
+     "match": [
+      24.0,
+      -75.0
+     ],
+     "src_mde": 20.155745350722455
+    },
+    "G1": {
+     "p": 20.0,
+     "match": [
+      16.0,
+      -80.0
+     ],
+     "src_mde": 16.09444510621574
+    },
+    "G2": {
+     "p": [
+      40.0,
+      0.03
+     ],
+     "match": [
+      8.0,
+      -90.0
+     ],
+     "src_mde": 17.006264080940294
+    },
+    "G3b": {
+     "p": [
+      10.0,
+      1.0
+     ],
+     "match": [
+      8.0,
+      -90.0
+     ],
+     "src_mde": 12.820632850352668
+    }
+   }
+  }
+ },
+ "law_other_equiv_max_delta": 0.0,
+ "elapsed_s": 1293.0
+}

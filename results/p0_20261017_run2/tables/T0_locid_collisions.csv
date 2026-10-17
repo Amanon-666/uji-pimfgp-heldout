@@ -1,0 +1,3 @@
+split,n_loc_id,n_round0.1m_coord,frac_coord_with_multi_locid,frac_locid_with_multi_coord
+internal,220,221,0.0,0.005
+official,942,916,0.022,0.0
