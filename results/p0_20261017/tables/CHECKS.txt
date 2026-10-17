@@ -1,0 +1,6 @@
+INVALID
+manifest hash 不一致 {0: '3e2df10f7f9f', 1: '49a9f4759730', 2: '5325bfe1a331'}
+null/perq 不对应 (0, 'B0F3', 2, '3', 'official'): null=(85, 32) perq=[85, 33]
+null/perq 不对应 (0, 'B0F3', 2, '5', 'official'): null=(85, 32) perq=[85, 33]
+null/perq 不对应 (0, 'B0F3', 2, '10', 'official'): null=(85, 5) perq=[85, 6]
+null/perq 不对应 (1, 'B1F2', 7, '10', 'internal'): null=(354, 169) perq=[354, 188]
