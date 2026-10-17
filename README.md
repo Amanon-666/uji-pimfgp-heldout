@@ -71,3 +71,9 @@ UJIIndoorLoc 少标定点（few-shot）跨楼栋 WiFi 指纹定位的研究代�
 真实模块快照与已确认事实见 `server_core/README.md`。`mapsep.py` 默认值已改为真实结构
 （schema `{"permute":[0],"fixed":[1]}`、`ORIG_AP_THRESH=none`、候选集含锚点行）；`mock/` 是旧 mock 结构（dict prior_map、无锚点行），
 不再与默认值兼容，仅作历史参考。core_code_version = `femloc@<FeMLoc git SHA>|files-sha256:<heldout+FeMLoc+mapsep 源文件联合哈希前16位>`。
+
+## Results
+- `results/p0_20261017/`：首次完整运行 run/，CHECKS = INVALID（manifest 全量 hash 含按建筑不同的源选参；far 由舍入 d_min 重算）。保留原样。
+- `results/p0_20261017_run2/`：在看到 run/ 的 INVALID 之后修复两处校验 bug + T5 行宽（详见该目录 README），同 seeds 重跑，CHECKS = VALID。
+  预注册判定规则（远距 Δ_wireless 的 95% CI 下界：pass_stat lo>0、pass_practical lo>1 m、pass_strong lo>2 m）未改。
+  perq/null 与 run/ 逐行一致，仅 22 条 d_min∈[19.995,20) 的 query far 归属不同。
